@@ -1,0 +1,158 @@
+#!/usr/bin/env python
+
+import hbp_nrp_excontrol.nrp_states as states
+from smach import StateMachine
+from smach.state import State
+
+from gazebo_msgs.srv import ApplyBodyWrench, GetModelState, DeleteModel, SpawnEntity, SpawnEntityRequest
+from geometry_msgs.msg import Wrench, Vector3, Point
+from gazebo_msgs.msg import ModelState
+import numpy as np
+import rospy
+from rospy import ServiceProxy, wait_for_service
+
+import random
+
+FINISHED = 'FINISHED'
+ERROR = 'ERROR'
+PREEMPTED = 'PREEMPTED'
+
+sm = StateMachine(outcomes=[FINISHED, ERROR, PREEMPTED])
+
+import hbp_nrp_excontrol.nrp_states as states
+
+ball_name = "ball"
+ball_sdf_xml = """
+<?xml version='1.0'?>
+<sdf version='1.5'>
+  <model name='{ball_name}'>
+    <pose>0 0 0 0 0 0</pose>
+    <link name='{ball_name}'>
+      <inertial>
+        <mass>0.257</mass>
+        <inertia>
+            <ixx>0.000428333</ixx>
+            <ixy>0</ixy>
+            <ixz>0</ixz>
+            <iyy>0.000428333</iyy>
+            <iyz>0</iyz>
+            <izz>0.000428333</izz>
+        </inertia>
+      </inertial>
+      <collision name='collision'>
+        <geometry>
+          <box>
+            <size>.1 .1 .1</size>
+          </box>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>100</mu>
+              <mu2>100</mu2>
+            </ode>
+          </friction>
+        </surface>
+      </collision>
+      <visual name='visual'>
+        <geometry>
+          <box>
+            <size>.1 .1 .1</size>
+          </box>
+        </geometry>
+        <material>
+          <script>
+            <uri>file://media/materials/scripts/gazebo.material</uri>
+            <name>Gazebo/{color}</name>
+          </script>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>
+"""
+
+ball_name = "ball"
+ball_colors = ['Green']  #, 'Red', 'Blue', 'Orange', 'Yellow', 'Purple', 'Turquoise']
+ball_start_pos = Point(0, -1.3, 1.5)
+
+ball_msg = SpawnEntityRequest()
+ball_msg.entity_name = ball_name
+ball_msg.entity_xml = ball_sdf_xml.format(ball_name=ball_name, color=np.random.choice(ball_colors, size=1)[0])
+ball_msg.initial_pose.position = ball_start_pos
+ball_msg.reference_frame = "world"
+
+spawn_proxy = rospy.ServiceProxy('/gazebo/spawn_sdf_entity', SpawnEntity, persistent=True)
+spawn_proxy(ball_msg)
+
+move_msg_pub = rospy.Publisher("/gazebo/set_model_state", ModelState, queue_size=1)
+
+move_msg = ModelState()
+move_msg.model_name = ball_name
+move_msg.pose.position = ball_start_pos
+move_msg.scale.x = 1
+move_msg.scale.y = 1
+move_msg.scale.z = 1
+move_msg.reference_frame = "world"
+
+class ThrowBallState(State):
+    def __init__(self, ball_name, sdf_xml, outcomes=['success', 'aborted']):
+        super(ThrowBallState, self).__init__(outcomes=outcomes)
+
+    def execute(self, userdata):
+        #rospy.loginfo(move_msg)
+        move_msg_pub.publish(move_msg)
+        return 'success'
+
+class FlyingBallState(State):
+    def __init__(self, ball_name, rate=1., outcomes=['success', 'aborted'], ):
+        super(FlyingBallState, self).__init__(outcomes=outcomes)
+        self._rate = rospy.Rate(rate)
+        self._state_proxy = ServiceProxy('/gazebo/get_model_state',
+                                         GetModelState, persistent=True)
+
+    def execute(self, userdata):
+        #start_time = rospy.Time.now()
+        while not self.ball_lower_than(0.1):
+            self._rate.sleep()
+        return 'success'
+
+    def ball_lower_than(self, z_threshold):
+        try:
+            current_ball_state = self._state_proxy(ball_name, "world")
+        except rospy.ServiceException as exc:
+            clientLogger.info(str(exc))
+            return False
+        return current_ball_state.pose.position.z < z_threshold
+
+class WaitBallState(State):
+    def __init__(self, ball_name, outcomes=['success', 'aborted']):
+        super(WaitBallState, self).__init__(outcomes=outcomes)
+
+    def execute(self, userdata):
+        duration_min = 4
+        duration_max = 5
+        duration = random.uniform(duration_min, duration_max)
+        rospy.sleep(duration)
+        return 'success'
+
+with sm:
+    # Waits until a simulation time of 20s is reached
+    StateMachine.add(
+      "throw_ball",
+      ThrowBallState(ball_name, ball_sdf_xml),
+      transitions = {"success": "flying_ball",
+                     "aborted": "ERROR"}
+    )
+    StateMachine.add(
+     "flying_ball",
+     FlyingBallState(ball_name),
+     transitions = {"success": "wait",
+                    "aborted": "ERROR"}
+    )
+    StateMachine.add(
+     "wait",
+     WaitBallState(ball_name),
+     transitions = {"success": "throw_ball",
+                    "aborted": "ERROR"}
+    )

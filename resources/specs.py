@@ -7,7 +7,7 @@ from scipy import optimize as op
 # Find the experiment directory (because names may vary a bit)
 exp_dir = os.environ['HOME']+'/.opt/nrpStorage/'
 for f_name in os.listdir(exp_dir):
-    if f_name.startswith('demonstrator6'):
+    if f_name.startswith('hri_graspping'):
         exp_dir += f_name+'/resources/'
         break  # only take the first matching directory
 
